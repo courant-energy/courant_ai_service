@@ -7,16 +7,16 @@ from sqlalchemy import create_engine
 
 # Database connection details
 host = 'localhost'
-database_name = 'readings_db'
-username = 'user'
-password = 'password'
+database_name = 'courant'
+username = 'root'
+password = ''
 
 # Create the database engine
 engine = create_engine(f'mysql+mysqlconnector://{username}:{password}@{host}/{database_name}')
 
 # Fetch data from the database
 query = """
-SELECT r.voltage, r.current, r.power, r.energy, r.frequency, r.power_factor, r.profile_id
+SELECT r.voltage, r.current, r.power, r.frequency, r.power_factor, r.profile_id, p.alert_sensitivity
 FROM readings r
 JOIN profiles p ON r.profile_id = p.id
 """
@@ -32,21 +32,37 @@ for profile_id in profile_ids:
     profile_df = df[df['profile_id'] == profile_id].copy()
     print(f"  Number of readings: {len(profile_df)}")
 
-    # Handle missing values for the current profile
+    # Get the alert sensitivity for this profile
+    alert_sensitivity = profile_df['alert_sensitivity'].iloc[0]
+    
+    # Map alert sensitivity to contamination value
+    contamination = 0.15  # Default to medium
+    if alert_sensitivity == 'low':
+        contamination = 0.05
+    elif alert_sensitivity == 'medium':
+        contamination = 0.15
+    elif alert_sensitivity == 'high':
+        contamination = 0.25
+    print(f"  Alert sensitivity: {alert_sensitivity}, Contamination: {contamination}")
+    
+    # Store alert_sensitivity separately and drop it before filling missing values
+    profile_df = profile_df.drop(columns=['alert_sensitivity'])
+    
+    # Handle missing values for the current profile (numeric columns only)
     profile_df = profile_df.fillna(profile_df.mean())
 
     # Prepare data for training
-    X = profile_df[['voltage', 'current', 'power', 'energy', 'frequency', 'power_factor']]
+    X = profile_df[['voltage', 'current', 'power', 'frequency', 'power_factor']]
 
     # Split data into training and testing sets for this profile
     X_train, X_test = train_test_split(X, test_size=0.2, random_state=42)
     print(f"  Training samples: {len(X_train)}, Testing samples: {len(X_test)}")
 
-    # Train the Isolation Forest model
-    model = IsolationForest(contamination='auto', random_state=42)
+    # Train the Isolation Forest model using alert sensitivity to set contamination
+    model = IsolationForest(contamination=contamination, random_state=42)
     model.fit(X_train)
     models[profile_id] = model
-    print(f"  Model trained for profile {profile_id}")
+    print(f"  Model trained for profile {profile_id} with contamination={contamination}")
 
     # Predict anomalies on the test set
     y_pred = model.predict(X_test)
