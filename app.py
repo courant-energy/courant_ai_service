@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from joblib import load
 import os
 import numpy as np
+from sklearn.preprocessing import MinMaxScaler
 
 app = Flask(__name__)
 models = None  # Global variable to hold the loaded Isolation Forest models dictionary
@@ -129,77 +130,139 @@ def predict_lstm():
              available_profiles = list(lstm_models.keys()) if lstm_models else []
              return jsonify({'error': f'No LSTM model found for profile_id: {profile_id}. Available profiles: {available_profiles}'}), 404
 
-        # Select the appropriate LSTM model for this profile
-        lstm_model = lstm_models[profile_id]
+        # Select the appropriate LSTM model, scaler, AND sensitivity for this profile
+        model_data = lstm_models[profile_id]
+        lstm_model = model_data.get('model')
+        scaler = model_data.get('scaler')
+        sensitivity = model_data.get('sensitivity', 'medium') # Default to medium if not found
+
+        if not lstm_model or not scaler:
+            app.logger.error(f"Model or scaler missing for profile_id {profile_id} in loaded data.")
+            return jsonify({'error': 'Internal server error: Incomplete model data loaded.'}), 500
+
+        # Define sensitivity thresholds (adjust percentages as needed)
+        thresholds = {
+            'low': {'upper': 1.25, 'lower': 0.75},    # +/- 25%
+            'medium': {'upper': 1.15, 'lower': 0.85}, # +/- 15%
+            'high': {'upper': 1.05, 'lower': 0.95}    # +/- 5%
+        }
+        current_threshold = thresholds.get(sensitivity, thresholds['medium']) # Use medium if sensitivity value is unexpected
 
         # Remove profile_id from features and keep only the model input features
         feature_data = {k: v for k, v in data.items() if k != 'profile_id'}
         feature_names = list(feature_data.keys())
         feature_values = list(feature_data.values())
 
-        # Convert input data to the format expected by the LSTM model
-        # IMPORTANT: LSTM models usually require sequential data (e.g., shape [batch_size, timesteps, features])
-        # Assuming the loaded LSTM model's predict method handles a single timestep input appropriately
-        # or expects a specific shape. This might need adjustment based on how the LSTM was trained.
-        # For this example, we'll assume it takes a shape like [1, 1, num_features] or simply [1, num_features]
-        # Let's try reshaping to [1, num_features] which is common for simpler prediction tasks.
-        # If the model expects sequences, this needs significant change.
+        # Convert input data to numpy array
         try:
             features_array = np.array([feature_values], dtype=float) # Shape [1, num_features]
-            # If LSTM expects sequence like [1, 1, num_features]:
-            # features_array = np.array([feature_values], dtype=float).reshape(1, 1, -1)
         except ValueError:
              return jsonify({'error': 'Input features must be numeric'}), 400
 
+        # Scale the input features using the loaded scaler
+        try:
+            scaled_features = scaler.transform(features_array)
+        except ValueError as e:
+             app.logger.error(f"Error scaling features for profile {profile_id}: {e}")
+             return jsonify({'error': f'Feature mismatch or scaling error: {e}'}), 400
+        except Exception as e:
+             app.logger.error(f"Unexpected error during scaling for profile {profile_id}: {e}")
+             return jsonify({'error': 'Internal server error during data scaling.'}), 500
+
+
+        # Reshape features for LSTM input: [batch_size, timesteps, features]
+        # NOTE: The model was trained on sequences (e.g., 10 timesteps).
+        # Predicting based on a single timestep might not be optimal.
+        # This assumes the model can handle a sequence of length 1.
+        # A better approach might involve fetching recent history or redesigning the model/endpoint.
+        lstm_input = scaled_features.reshape((1, 1, scaled_features.shape[1]))
 
         # Make prediction using the selected LSTM model
-        # Assuming the model predicts the 'expected' or 'threshold' values for the next step
-        predicted_values = lstm_model.predict(features_array)[0] # Get the first (and only) prediction
+        predicted_scaled_values = lstm_model.predict(lstm_input)[0] # Shape [num_features]
 
-        # Ensure predicted_values is iterable and has same length as feature_names
-        if not hasattr(predicted_values, '__iter__') or len(predicted_values) != len(feature_names):
-             app.logger.error(f"LSTM model for profile {profile_id} produced unexpected output shape.")
+        # Inverse transform the prediction to the original scale
+        try:
+            predicted_values = scaler.inverse_transform(predicted_scaled_values.reshape(1, -1))[0]
+        except Exception as e:
+             app.logger.error(f"Error inverse transforming prediction for profile {profile_id}: {e}")
+             return jsonify({'error': 'Internal server error during prediction scaling.'}), 500
+
+        # Ensure predicted_values has same length as feature_names
+        if len(predicted_values) != len(feature_names):
+             app.logger.error(f"LSTM model for profile {profile_id} produced unexpected output shape after scaling.")
              return jsonify({'error': 'Internal server error: LSTM model prediction format mismatch.'}), 500
 
-
-        # Compare actual values with predicted values/thresholds
+        # Compare actual values with predicted values using sensitivity thresholds
         comparison_results = {}
         overall_status = "within_prediction" # Default status
-        high_features = {}
+        deviation_summary = {}
 
         for i, name in enumerate(feature_names):
             actual = feature_values[i]
             predicted = predicted_values[i]
-            is_above = actual > predicted
+            status = "within_prediction"
+            deviation = None
+
+            # Avoid division by zero if predicted is 0 or very close to 0
+            if abs(predicted) > 1e-6:
+                deviation = actual / predicted
+                if deviation > current_threshold['upper']:
+                    status = "significantly_above"
+                elif actual > predicted: # Above predicted but within threshold
+                    status = "above_prediction"
+                elif deviation < current_threshold['lower']:
+                    status = "significantly_below"
+                elif actual < predicted: # Below predicted but within threshold
+                    status = "below_prediction"
+            elif actual > predicted: # Handle predicted near zero case simply
+                 status = "significantly_above" if actual > 0.1 else "above_prediction" # Arbitrary small threshold
+            elif actual < predicted:
+                 status = "significantly_below" if actual < -0.1 else "below_prediction"
+
             comparison_results[name] = {
                 'actual': float(actual),
                 'predicted': float(predicted),
-                'status': 'above_prediction' if is_above else 'within_prediction'
+                'status': status
             }
-            if is_above:
-                overall_status = "above_prediction" # Change status if any feature is above
-                high_features[name] = {'actual': float(actual), 'predicted': float(predicted)}
+
+            # Track the most significant deviation for overall status and summary
+            if status == "significantly_above" or status == "significantly_below":
+                deviation_summary[name] = {'actual': float(actual), 'predicted': float(predicted), 'status': status}
+                # Prioritize significant deviations for overall status
+                if overall_status != "significantly_above" and overall_status != "significantly_below":
+                     overall_status = status
+                elif status == "significantly_above" and overall_status == "significantly_below":
+                     overall_status = "multiple_significant_deviations" # Indicate both types occurred
+                elif status == "significantly_below" and overall_status == "significantly_above":
+                     overall_status = "multiple_significant_deviations"
+            elif (status == "above_prediction" or status == "below_prediction") and overall_status == "within_prediction":
+                 overall_status = status # Update to minor deviation if only within_prediction so far
 
         # Prepare the response
         response = {
             'profile_id': profile_id,
+            'sensitivity_level': sensitivity,
             'overall_status': overall_status,
             'details': comparison_results,
             'interpretation': {
-                'message': f"Comparison of input data against LSTM predictions for profile {profile_id}.",
+                'message': f"Comparison of input data against LSTM predictions for profile {profile_id} using '{sensitivity}' sensitivity.",
                 'status_meaning': {
-                    'within_prediction': "Input values are within the predicted range or below the predicted threshold.",
-                    'above_prediction': "One or more input values are above the predicted range or threshold, indicating a potential deviation."
+                    'within_prediction': f"Input values are within the predicted range (+/- { (current_threshold['upper']-1)*100:.0f}%).",
+                    'above_prediction': f"Input values are slightly above the predicted value but within the '{sensitivity}' threshold.",
+                    'below_prediction': f"Input values are slightly below the predicted value but within the '{sensitivity}' threshold.",
+                    'significantly_above': f"One or more input values are significantly above (+{ (current_threshold['upper']-1)*100:.0f}%) the predicted value based on '{sensitivity}' sensitivity.",
+                    'significantly_below': f"One or more input values are significantly below (-{ (1-current_threshold['lower'])*100:.0f}%) the predicted value based on '{sensitivity}' sensitivity.",
+                    'multiple_significant_deviations': f"Multiple input values showed significant deviations (both above and below) based on '{sensitivity}' sensitivity."
                 },
-                'high_features_summary': high_features if high_features else "No features were significantly above predicted values."
+                'significant_deviations_summary': deviation_summary if deviation_summary else "No features showed significant deviations from predicted values."
             }
         }
 
         return jsonify(response), 200
 
     except Exception as e:
-        app.logger.error(f"Error during LSTM prediction: {str(e)}")
-        # Consider more specific error handling based on potential exceptions
+        # Log the full traceback for better debugging
+        app.logger.exception(f"Error during LSTM prediction for profile {profile_id if 'profile_id' in locals() else 'unknown'}:")
         return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
 
 # Health check endpoint

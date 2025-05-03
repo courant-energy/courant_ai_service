@@ -29,8 +29,9 @@ except Exception as e:
 
 # --- Fetch Data ---
 query = """
-SELECT r.voltage, r.current, r.power, r.frequency, r.power_factor, r.profile_id
+SELECT r.voltage, r.current, r.power, r.frequency, r.power_factor, r.profile_id, p.alert_sensitivity
 FROM readings r
+JOIN profiles p ON r.profile_id = p.id -- Join with profiles table
 ORDER BY r.profile_id, r.created_at ASC -- Order by time for sequence generation
 """
 try:
@@ -51,13 +52,24 @@ def create_sequences(data, seq_length):
     return np.array(xs), np.array(ys)
 
 # --- Train Models Per Profile ---
-trained_objects = {} # Will store {'profile_id': {'model': model, 'scaler': scaler}}
+trained_objects = {} # Will store {'profile_id': {'model': model, 'scaler': scaler, 'sensitivity': alert_sensitivity}}
 profile_ids = df['profile_id'].unique()
 print(f"Found {len(profile_ids)} unique profiles. Starting training...")
 
 for profile_id in profile_ids:
     print(f"\n--- Processing Profile ID: {profile_id} ---")
-    profile_df = df[df['profile_id'] == profile_id][FEATURE_COLUMNS].copy()
+    # Get all data for the profile first
+    profile_data_full = df[df['profile_id'] == profile_id].copy()
+    if profile_data_full.empty:
+        print(f"  Skipping profile {profile_id}: No data found.")
+        continue
+
+    # Extract sensitivity (assuming it's consistent for the profile)
+    alert_sensitivity = profile_data_full['alert_sensitivity'].iloc[0]
+    print(f"  Alert Sensitivity: {alert_sensitivity}")
+
+    # Select only feature columns for training
+    profile_df = profile_data_full[FEATURE_COLUMNS].copy()
     print(f"  Number of readings: {len(profile_df)}")
 
     if len(profile_df) < SEQUENCE_LENGTH + 1:
@@ -113,9 +125,13 @@ for profile_id in profile_ids:
     )
     print("  Model training complete.")
 
-    # Store the trained model and scaler
-    trained_objects[profile_id] = {'model': model, 'scaler': scaler}
-    print(f"  Model and scaler stored for profile {profile_id}.")
+    # Store the trained model, scaler, AND sensitivity
+    trained_objects[profile_id] = {
+        'model': model,
+        'scaler': scaler,
+        'sensitivity': alert_sensitivity # Add sensitivity here
+    }
+    print(f"  Model, scaler, and sensitivity stored for profile {profile_id}.")
 
 # --- Save Trained Models and Scalers ---
 if trained_objects:
