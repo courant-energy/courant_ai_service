@@ -1,4 +1,4 @@
 # Ignore all .joblib files
 *.joblib
-./venv
+venv/
 __pycache__/

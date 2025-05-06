@@ -11,8 +11,8 @@ import os
 # --- Configuration ---
 DB_HOST = 'localhost'
 DB_NAME = 'courant'
-DB_USER = 'root'
-DB_PASS = ''
+DB_USER = 'user'
+DB_PASS = 'dFSYzQ1OYBtq3qtEWBfY'
 SEQUENCE_LENGTH = 10  # Number of time steps to look back
 EPOCHS = 50
 BATCH_SIZE = 32

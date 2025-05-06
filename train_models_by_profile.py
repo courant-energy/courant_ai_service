@@ -8,8 +8,8 @@ from sqlalchemy import create_engine
 # Database connection details
 host = 'localhost'
 database_name = 'courant'
-username = 'root'
-password = ''
+username = 'user'
+password = 'dFSYzQ1OYBtq3qtEWBfY'
 
 # Create the database engine
 engine = create_engine(f'mysql+mysqlconnector://{username}:{password}@{host}/{database_name}')
