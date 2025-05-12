@@ -36,13 +36,13 @@ for profile_id in profile_ids:
     alert_sensitivity = profile_df['alert_sensitivity'].iloc[0]
     
     # Map alert sensitivity to contamination value
-    contamination = 0.15  # Default to medium
+    contamination = 0.10  # Default to medium
     if alert_sensitivity == 'low':
         contamination = 0.05
     elif alert_sensitivity == 'medium':
-        contamination = 0.15
+        contamination = 0.10
     elif alert_sensitivity == 'high':
-        contamination = 0.25
+        contamination = 0.15
     print(f"  Alert sensitivity: {alert_sensitivity}, Contamination: {contamination}")
     
     # Store alert_sensitivity separately and drop it before filling missing values
