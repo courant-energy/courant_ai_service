@@ -144,7 +144,7 @@ def predict_lstm():
         thresholds = {
             'low': {'upper': 1.25, 'lower': 0.75},    # +/- 25%
             'medium': {'upper': 1.15, 'lower': 0.85}, # +/- 15%
-            'high': {'upper': 1.05, 'lower': 0.95}    # +/- 5%
+            'high': {'upper': 1.10, 'lower': 0.90}    # +/- 10%
         }
         current_threshold = thresholds.get(sensitivity, thresholds['medium']) # Use medium if sensitivity value is unexpected
 
