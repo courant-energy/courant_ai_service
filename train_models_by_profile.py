@@ -59,7 +59,7 @@ for profile_id in profile_ids:
     print(f"  Training samples: {len(X_train)}, Testing samples: {len(X_test)}")
 
     # Train the Isolation Forest model using alert sensitivity to set contamination
-    model = IsolationForest(contamination=contamination, random_state=42)
+    model = IsolationForest(n_estimators=50,contamination=contamination, random_state=42)
     model.fit(X_train)
     models[profile_id] = model
     print(f"  Model trained for profile {profile_id} with contamination={contamination}")
