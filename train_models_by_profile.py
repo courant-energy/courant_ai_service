@@ -34,7 +34,7 @@ def get_recent_data_with_timestamps(engine, days_back=30):
     ORDER BY r.profile_id, r.created_at ASC
     """
     
-    df = pd.read_sql(query, engine, params=[cutoff_date])
+    df = pd.read_sql(query, engine, params=(cutoff_date,))
     df['created_at'] = pd.to_datetime(df['created_at'])
     return df
 
