@@ -5,6 +5,7 @@ import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime
 from sqlalchemy import create_engine
+from sqlalchemy.pool import QueuePool
 import pandas as pd
 
 app = Flask(__name__)
@@ -17,10 +18,19 @@ DB_NAME = 'courant'
 DB_USER = 'user'
 DB_PASS = 'dFSYzQ1OYBtq3qtEWBfY'
 
+# Create database engine once with connection pooling
+db_engine = create_engine(
+    f'mysql+mysqlconnector://{DB_USER}:{DB_PASS}@{DB_HOST}/{DB_NAME}',
+    poolclass=QueuePool,
+    pool_size=5,
+    max_overflow=10,
+    pool_recycle=3600,
+    pool_pre_ping=True
+)
 
 def get_database_engine():
     """Get database engine for fetching recent data"""
-    return create_engine(f'mysql+mysqlconnector://{DB_USER}:{DB_PASS}@{DB_HOST}/{DB_NAME}')
+    return db_engine
 
 def get_recent_readings_for_temporal_features(profile_id, window_size=5):
     """Fetch recent readings to create temporal features for Isolation Forest"""
@@ -101,40 +111,45 @@ def create_temporal_features_for_prediction(current_data, recent_data, timestamp
     
     return feature_vector
 
-# For newer Flask versions (2.0+) which don't support @app.before_first_request
-@app.before_request
-def load_models_if_needed():
+def load_models():
+    """Load all models once at application startup"""
     global models, lstm_models
+    
     # Load Isolation Forest models
-    if models is None:
-        try:
-            models_path = os.path.join(os.path.dirname(__file__), 'trained_models.joblib')
-            if os.path.exists(models_path):
-                models = load(models_path)
-                app.logger.info(f"Isolation Forest models loaded successfully. Available profile IDs: {list(models.keys())}")
-            else:
-                app.logger.warning(f"Isolation Forest model file not found at {models_path}. '/predict' endpoint will not work.")
-                models = {} # Initialize as empty dict if file not found
-        except Exception as e:
-            app.logger.error(f"Error loading Isolation Forest models: {str(e)}")
-            models = {} # Initialize as empty dict on error
+    try:
+        models_path = os.path.join(os.path.dirname(__file__), 'trained_models.joblib')
+        if os.path.exists(models_path):
+            models = load(models_path)
+            app.logger.info(f"Isolation Forest models loaded successfully. Available profile IDs: {list(models.keys())}")
+        else:
+            app.logger.warning(f"Isolation Forest model file not found at {models_path}. '/predict' endpoint will not work.")
+            models = {}
+    except Exception as e:
+        app.logger.error(f"Error loading Isolation Forest models: {str(e)}")
+        models = {}
 
     # Load LSTM models
-    if lstm_models is None:
-        try:
-            lstm_models_path = os.path.join(os.path.dirname(__file__), 'trained_lstm_models.joblib')
-            if os.path.exists(lstm_models_path):
-                lstm_models = load(lstm_models_path)
-                app.logger.info(f"LSTM models loaded successfully. Available profile IDs: {list(lstm_models.keys())}")
-            else:
-                app.logger.warning(f"LSTM model file not found at {lstm_models_path}. '/predict_lstm' endpoint will not work.")
-                lstm_models = {} # Initialize as empty dict if file not found
-        except Exception as e:
-            app.logger.error(f"Error loading LSTM models: {str(e)}")
-            lstm_models = {} # Initialize as empty dict on error
+    try:
+        lstm_models_path = os.path.join(os.path.dirname(__file__), 'trained_lstm_models.joblib')
+        if os.path.exists(lstm_models_path):
+            lstm_models = load(lstm_models_path)
+            app.logger.info(f"LSTM models loaded successfully. Available profile IDs: {list(lstm_models.keys())}")
+        else:
+            app.logger.warning(f"LSTM model file not found at {lstm_models_path}. '/predict_lstm' endpoint will not work.")
+            lstm_models = {}
+    except Exception as e:
+        app.logger.error(f"Error loading LSTM models: {str(e)}")
+        lstm_models = {}
+
+# Load models once at startup
+load_models()
 
 @app.route('/predict', methods=['POST'])
 def predict():
+    # Early validation to avoid heavy processing
+    if models is None or len(models) == 0:
+        return jsonify({'error': 'Models not loaded'}), 503
+        
     try:
         # Check if we have valid JSON in the request
         data = request.get_json()
@@ -240,6 +255,10 @@ def predict():
 # LSTM Prediction endpoint
 @app.route('/predict_lstm', methods=['POST'])
 def predict_lstm():
+    # Early validation to avoid heavy processing
+    if lstm_models is None or len(lstm_models) == 0:
+        return jsonify({'error': 'LSTM models not loaded'}), 503
+        
     try:
         # Check if we have valid JSON in the request
         data = request.get_json()
